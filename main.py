@@ -1,159 +1,229 @@
 import os
+import argparse
 import gymnasium as gym
 import numpy as np
 import imageio
 import cv2
+import torch
+import matplotlib.pyplot as plt
 from stable_baselines3 import SAC
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.vec_env import VecNormalize, DummyVecEnv
 from stable_baselines3.common.callbacks import EvalCallback
 
 # ==========================================
-#               配置区域
+#       Configuration & Hyperparameters
 # ==========================================
 LOG_DIR = "./bipedal_sac_logs"
 MODEL_DIR = os.path.join(LOG_DIR, "models")
 VIDEO_DIR = os.path.join(LOG_DIR, "final_videos")
 BEST_MODEL_DIR = os.path.join(LOG_DIR, "best_model")
+PLOT_DIR = os.path.join(LOG_DIR, "plots")
+STATS_PATH = os.path.join(MODEL_DIR, "vec_normalize.pkl")
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 os.makedirs(VIDEO_DIR, exist_ok=True)
 os.makedirs(BEST_MODEL_DIR, exist_ok=True)
+os.makedirs(PLOT_DIR, exist_ok=True)
 
 ENV_ID = "BipedalWalker-v3"
-# SAC 效率很高，50万步通常就能达到 PPO 300万步的效果
-# 如果你想追求极致稳定，可以设为 1000000
-TOTAL_TIMESTEPS = 500000  
-N_ENVS = 1 # SAC 是 Off-policy 算法，通常使用单线程环境效果最好，不用多核并行
+TOTAL_TIMESTEPS = 500000
+N_ENVS = 2  # Optimized for GPU throughput
 
-print(f"检测到 CPU，正在启动 SAC 算法")
-print(f"目标：实现双腿行走，直冲 300+ 分")
-print("=" * 50)
+device_str = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ==========================================
-#             主训练流程
+#             Training Logic
 # ==========================================
-def main():
-    # 1. 创建环境
-    # SAC 通常不需要并行环境，单进程即可
+def train():
+    print(f"[INFO] Device: {device_str.upper()} | Environment: {ENV_ID}")
+    print("[INFO] Initializing training environments...")
+
+    # 1. Training Environment
     env = make_vec_env(ENV_ID, n_envs=N_ENVS)
-    # 依然需要归一化，这是物理环境的标配
     env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.)
 
-    # 2. 评估环境 (裁判)
+    # 2. Evaluation Environment
     eval_env = make_vec_env(ENV_ID, n_envs=1)
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=True, clip_obs=10.)
 
-    # 3. 回调函数 (保存最佳模型)
+    # 3. Callback
     eval_callback = EvalCallback(
         eval_env,
         best_model_save_path=BEST_MODEL_DIR,
         log_path=BEST_MODEL_DIR,
-        eval_freq=10000,       # 每 1万步考一次
-        n_eval_episodes=5,     # 每次考 5 局
+        eval_freq=10000 // N_ENVS,
+        n_eval_episodes=5,
         deterministic=True,
         verbose=1
     )
 
-    # 4. 定义 SAC 模型 (针对 BipedalWalker 的黄金参数)
-    # 来源：Stable Baselines3 RL Zoo 最佳实践
+    # 4. Model Initialization
     model = SAC(
         "MlpPolicy",
         env,
         verbose=1,
-        device='cpu',
+        device=device_str,
         batch_size=256,
-        learning_rate=7.3e-4,  # SAC 的学习率通常比 PPO 大
-        buffer_size=300000,    # 经验回放池
-        learning_starts=10000, # 先随机乱动 1万步，收集数据
-        train_freq=1,          # 每步都训练
+        learning_rate=7.3e-4,
+        buffer_size=300000,
+        learning_starts=10000,
+        train_freq=1,
         gradient_steps=1,
-        ent_coef='auto',       # <--- 核心！自动调整探索欲望，绝不跪地！
+        ent_coef='auto',
         gamma=0.99,
         tau=0.01,
-        policy_kwargs=dict(net_arch=[256, 256]), # 大脑容量保持 256
+        policy_kwargs=dict(net_arch=[256, 256]),
     )
 
-    print("🚀 开始 SAC 训练...")
-    print("提示：SAC 的 FPS 会比 PPO 慢，但它学的非常快！请耐心等待 50万步。")
-    
+    print("[INFO] Starting training phase...")
     model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=eval_callback)
+    print("[INFO] Training complete.")
     
-    print("训练完成。")
-    
-    # 保存最终模型
+    # Save artifacts
     model.save(os.path.join(MODEL_DIR, "final_model"))
-    env.save(os.path.join(MODEL_DIR, "vec_normalize.pkl"))
+    env.save(STATS_PATH)
     
     env.close()
     eval_env.close()
     
-    # 自动录像
-    record_video(os.path.join(MODEL_DIR, "vec_normalize.pkl"))
+    # Auto-generate plots after training
+    generate_plots()
 
 # ==========================================
-#             录像流程
+#        Data Visualization & Logging
+# ==========================================
+def generate_plots():
+    print("[INFO] Generating analysis plots and logs...")
+    data_path = os.path.join(BEST_MODEL_DIR, "evaluations.npz")
+    
+    if not os.path.exists(data_path):
+        print("[WARN] Evaluation data not found. Skipping plots.")
+        return
+
+    data = np.load(data_path)
+    timesteps = data['timesteps']
+    results = data['results']       
+    ep_lengths = data['ep_lengths'] 
+
+    mean_rewards = np.mean(results, axis=1)
+    std_rewards = np.std(results, axis=1)
+    mean_lengths = np.mean(ep_lengths, axis=1)
+
+    # TXT Log
+    txt_log_path = os.path.join(LOG_DIR, "training_result_log.txt")
+    with open(txt_log_path, "w", encoding="utf-8") as f:
+        f.write("=" * 60 + "\n")
+        f.write(f"           SAC Training Log: {ENV_ID}\n")
+        f.write("=" * 60 + "\n")
+        f.write(f"{'Timestep':<12} | {'Mean Reward':<12} | {'Std Dev':<10} | {'Mean Length':<12}\n")
+        f.write("-" * 60 + "\n")
+        
+        best_reward = -np.inf
+        best_step = 0
+        
+        for i in range(len(timesteps)):
+            t = timesteps[i]
+            r = mean_rewards[i]
+            std = std_rewards[i]
+            l = mean_lengths[i]
+            if r > best_reward:
+                best_reward = r
+                best_step = t
+            f.write(f"{t:<12} | {r:<12.2f} | {std:<10.2f} | {l:<12.2f}\n")
+            
+        f.write("-" * 60 + "\n")
+        f.write(f"Best Performance: Reward {best_reward:.2f} at Step {best_step}\n")
+        f.write("=" * 60 + "\n")
+    
+    # Plot 1: Learning Curve
+    plt.figure(figsize=(10, 6))
+    plt.plot(timesteps, mean_rewards, label="Mean Reward", color='b', linewidth=2)
+    plt.fill_between(timesteps, mean_rewards - std_rewards, mean_rewards + std_rewards, color='b', alpha=0.2, label="Std Dev")
+    plt.axhline(y=300, color='r', linestyle='--', label="Solved Threshold (300)")
+    plt.title("SAC Training Performance: Average Reward over Time")
+    plt.xlabel("Timesteps")
+    plt.ylabel("Average Reward")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(PLOT_DIR, "learning_curve_reward.png"))
+    plt.close()
+
+    # Plot 2: Episode Length
+    plt.figure(figsize=(10, 6))
+    plt.plot(timesteps, mean_lengths, label="Mean Episode Length", color='g', linewidth=2)
+    plt.title("Agent Stability: Average Episode Length over Time")
+    plt.xlabel("Timesteps")
+    plt.ylabel("Steps per Episode")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.savefig(os.path.join(PLOT_DIR, "training_episode_length.png"))
+    plt.close()
+
+    # Plot 3: Stability Boxplot
+    indices = np.linspace(0, len(timesteps)-1, 5, dtype=int)
+    selected_data = [results[i] for i in indices]
+    selected_labels = [f"{int(timesteps[i]/1000)}k" for i in indices]
+
+    plt.figure(figsize=(10, 6))
+    # Corrected argument 'labels' for matplotlib compatibility
+    plt.boxplot(selected_data, labels=selected_labels, patch_artist=True)
+    plt.title("Reward Distribution Analysis")
+    plt.xlabel("Timesteps (k = 1000)")
+    plt.ylabel("Reward Distribution")
+    plt.grid(True, axis='y', alpha=0.3)
+    plt.savefig(os.path.join(PLOT_DIR, "reward_stability_boxplot.png"))
+    plt.close()
+    
+    print(f"[INFO] Plots saved to {PLOT_DIR}")
+
+# ==========================================
+#           Video Recording
 # ==========================================
 def record_video(stats_path):
-    print("\n🎬 开始录制最终成果 (带步数与得分显示)...")
+    print("[INFO] Recording top 3 performing episodes...")
     
     best_model_path = os.path.join(BEST_MODEL_DIR, "best_model.zip")
     if not os.path.exists(best_model_path):
         best_model_path = os.path.join(MODEL_DIR, "final_model.zip")
     
-    print(f"加载模型: {best_model_path}")
+    if not os.path.exists(stats_path):
+        print(f"[ERROR] Stats file not found at {stats_path}. Train model first.")
+        return
 
     env = gym.make(ENV_ID, render_mode="rgb_array")
     env = DummyVecEnv([lambda: env])
-    
     env = VecNormalize.load(stats_path, env)
     env.training = False
     env.norm_reward = False
 
-    model = SAC.load(best_model_path, device='cpu')
-
+    model = SAC.load(best_model_path, device=device_str)
     top_records = []
     
-    print("-" * 30)
-    # 测试 10 局
     for i in range(1, 11):
         obs = env.reset()
         frames = []
         total_reward = 0
-        step_counter = 0 # 步数计数器
+        step_counter = 0
         
         while True:
-            # 1. 获取原始画面
             frame = env.render()
-            
-            # 2. 转换为 OpenCV 可编辑格式 (复制一份，防止修改原始数据报错)
-            # Gym 返回的是 RGB，OpenCV 也是处理数组，可以直接操作
             frame = np.array(frame, dtype=np.uint8)
-            
-            # 3. 准备文字内容
             step_counter += 1
-            info_text = f"Step: {step_counter} | Score: {total_reward:.2f}"
             
-            # 4. 在画面上写字 (带黑色描边，防止白色背景看不清)
-            # 参数: 图片, 文字, 坐标(x,y), 字体, 大小, 颜色(RGB), 粗细
-            # 先画黑色轮廓
-            cv2.putText(frame, info_text, (10, 30), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3, cv2.LINE_AA)
-            # 再画白色文字
-            cv2.putText(frame, info_text, (10, 30), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
-
+            info_text = f"Step: {step_counter} | Score: {total_reward:.2f}"
+            cv2.putText(frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 3, cv2.LINE_AA)
+            cv2.putText(frame, info_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1, cv2.LINE_AA)
             frames.append(frame)
             
-            # 预测与执行
             action, _ = model.predict(obs, deterministic=True)
             obs, rewards, dones, infos = env.step(action)
             total_reward += rewards[0]
             
             if dones[0]: break
         
-        status = "👑 完美" if total_reward > 300 else ("✅ 优秀" if total_reward > 250 else "❌ 一般")
-        print(f"测试 {i}/10: {total_reward:.2f} [{status}]")
+        status = "Solved" if total_reward > 300 else "Finished"
+        print(f"Test Episode {i}/10: Score {total_reward:.2f} [{status}]")
 
         if len(top_records) < 3:
             top_records.append((total_reward, frames))
@@ -163,14 +233,117 @@ def record_video(stats_path):
             top_records.append((total_reward, frames))
             top_records.sort(key=lambda x: x[0], reverse=True)
 
-    print("正在保存前 3 名的视频...")
     for rank, (score, frames) in enumerate(top_records):
         filename = os.path.join(VIDEO_DIR, f"sac_rank{rank+1}_score_{score:.2f}.mp4")
         imageio.mimsave(filename, frames, fps=50)
-        print(f"已保存: {filename}")
+        print(f"[INFO] Video saved: {filename}")
     
     env.close()
 
+# ==========================================
+#          Interactive Live Demo
+# ==========================================
+def run_live_demo(stats_path):
+    print("\n[INFO] Starting Live Demo Window (Press 'q' to exit)...")
+    
+    best_model_path = os.path.join(BEST_MODEL_DIR, "best_model.zip")
+    if not os.path.exists(best_model_path):
+        best_model_path = os.path.join(MODEL_DIR, "final_model.zip")
+
+    if not os.path.exists(stats_path):
+        print(f"[ERROR] Stats file not found at {stats_path}. Train model first.")
+        return
+    
+    env = gym.make(ENV_ID, render_mode="rgb_array")
+    env = DummyVecEnv([lambda: env])
+    env = VecNormalize.load(stats_path, env)
+    env.training = False
+    env.norm_reward = False
+
+    model = SAC.load(best_model_path, device=device_str)
+
+    for i in range(1, 6):
+        obs = env.reset()
+        total_reward = 0
+        step_counter = 0
+        current_step_reward = 0.0
+        
+        print(f"Demo Episode {i}/5 started...")
+
+        while True:
+            frame = env.render()
+            img_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            
+            step_counter += 1
+            
+            reward_color = (0, 255, 0) if current_step_reward >= 0 else (0, 0, 255)
+            text_color = (255, 255, 255)
+            
+            txt_step = f"Step: {step_counter}"
+            txt_total = f"Total: {total_reward:.2f}"
+            txt_instant = f"Instant: {current_step_reward:+.2f}"
+
+            def draw_text(img, text, pos, color, scale=0.6):
+                cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 3, cv2.LINE_AA)
+                cv2.putText(img, text, pos, cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
+
+            draw_text(img_bgr, txt_step, (10, 30), text_color)
+            draw_text(img_bgr, txt_total, (10, 60), text_color)
+            draw_text(img_bgr, txt_instant, (10, 90), reward_color)
+
+            cv2.imshow("SAC BipedalWalker Agent", img_bgr)
+            
+            if cv2.waitKey(20) == ord('q'):
+                env.close()
+                cv2.destroyAllWindows()
+                return
+
+            action, _ = model.predict(obs, deterministic=True)
+            obs, rewards, dones, infos = env.step(action)
+            current_step_reward = rewards[0]
+            total_reward += current_step_reward
+            
+            if dones[0]:
+                final_text = f"Result: Steps {step_counter} | Score {total_reward:.2f}"
+                draw_text(img_bgr, final_text, (50, 200), (0, 255, 255), scale=0.8)
+                draw_text(img_bgr, "Press any key to continue...", (50, 240), (255, 255, 255), scale=0.6)
+                cv2.imshow("SAC BipedalWalker Agent", img_bgr)
+                print(f"[INFO] Episode {i} finished. {final_text}")
+                cv2.waitKey(0)
+                break
+                
+    env.close()
+    cv2.destroyAllWindows()
+
+# ==========================================
+#             Main Entry Point
+# ==========================================
+def main():
+    parser = argparse.ArgumentParser(description="SAC BipedalWalker-v3 Manager")
+    parser.add_argument("--train", action="store_true", help="Train the agent")
+    parser.add_argument("--plot", action="store_true", help="Generate analysis plots")
+    parser.add_argument("--video", action="store_true", help="Record validation videos")
+    parser.add_argument("--demo", action="store_true", help="Run real-time visualization")
+    
+    args = parser.parse_args()
+
+    # If no arguments are provided, print help
+    if not any(vars(args).values()):
+        parser.print_help()
+        return
+
+    # Execute based on flags
+    if args.train:
+        train()
+        
+    if args.plot and not args.train: # If trained, plot is already called
+        generate_plots()
+        
+    if args.video:
+        record_video(STATS_PATH)
+        
+    if args.demo:
+        run_live_demo(STATS_PATH)
 
 if __name__ == "__main__":
     main()
