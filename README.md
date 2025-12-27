@@ -34,6 +34,7 @@ Run the following commands based on your needs:
 
 ## Output
 After the program finishes, the `.\bipedal_sac_logs` directory will contain:
-- **final_videos/**: The top 3 highest-scoring videos.
-- **plots/**: Performance analysis charts (Learning Curve, Stability).
+- **final_videos**: The top 3 highest-scoring videos.
+- **plots**: Performance analysis charts (Learning Curve, Stability).
 - **training_result_log.txt**: Detailed training log.
+
