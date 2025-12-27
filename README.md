@@ -1,25 +1,39 @@
-# BipedalWalker 强化学习项目
+# BipedalWalker Reinforcement Learning Project
 
-## 项目描述
-使用 SAC 算法训练 BipedalWalker-v3，并生成演示视频。
+## Project Description
+Train BipedalWalker-v3 using the SAC algorithm, analyze performance, and generate demonstration videos.
 
-## 环境依赖
-- Python 3.8 - 3.10 (建议)
-- Windows, Linux, 或 macOS
+## Environment Dependencies
+- Python 3.8 - 3.10 (Recommended)
+- Windows, Linux, or macOS
 
-## 安装步骤
-1. 打开终端或命令行。
-2. 创建虚拟环境:
+## Installation Steps
+1. Open terminal or command prompt.
+2. Create virtual environment:
    python -m venv .venv
-3. 激活虚拟环境:
+3. Activate virtual environment:
    - Windows: .venv\Scripts\activate
    - Linux/Mac: source .venv/bin/activate
-4. 安装依赖:
+4. Install dependencies:
    pip install -r requirements.txt 
 
-## 运行项目
-运行以下命令开始训练并生成视频：
-python main.py
+## Run Project
+Run the following commands based on your needs:
 
-## 输出
-程序运行结束后，.\bipedal_sac_logs\final_videos目录下会生成得分最高的三个视频。
+- **Start Training:**
+  python main.py --train
+
+- **Run Live Demo (requires trained model):**
+  python main.py --demo
+
+- **Record Videos:**
+  python main.py --video
+
+- **Generate Data Plots:**
+  python main.py --plot
+
+## Output
+After the program finishes, the `.\bipedal_sac_logs` directory will contain:
+- **final_videos/**: The top 3 highest-scoring videos.
+- **plots/**: Performance analysis charts (Learning Curve, Stability).
+- **training_result_log.txt**: Detailed training log.
