@@ -15,7 +15,9 @@ Train BipedalWalker-v3 using the SAC algorithm, analyze performance, and generat
    - Windows: .venv\Scripts\activate
    - Linux/Mac: source .venv/bin/activate
 4. Install dependencies:
-   pip install -r requirements.txt 
+   pip install -r requirements.txt
+   -use gpu pip this
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu120  ##cheack your cuda version 
 
 ## Run Project
 Run the following commands based on your needs:
@@ -37,4 +39,5 @@ After the program finishes, the `.\bipedal_sac_logs` directory will contain:
 - **final_videos**: The top 3 highest-scoring videos.
 - **plots**: Performance analysis charts (Learning Curve, Stability).
 - **training_result_log.txt**: Detailed training log.
+
 
